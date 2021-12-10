@@ -139,6 +139,73 @@ class Conv2d(ABCConv2d):
     def __call__(self, input_tensor):
         return self.conv2d(input_tensor)
 
+class myConv2dLoop(ABCConv2d):
+    def __call__(self, input_tensor):
+        if input_tensor == None:
+            return None
+        nimages, out_channels, nrows_out, ncols_out = calc_out_shape(
+            input_tensor.shape, 
+            self.out_channels, 
+            self.kernel_size, 
+            self.stride, 0)
+       
+        output_tensor = torch.zeros(input_tensor.shape[0]*self.out_channels*\
+                                    nrows_out*ncols_out).reshape(\
+                                    input_tensor.shape[0], self.out_channels, 
+                                    nrows_out, ncols_out)
+        for img in range(nimages):
+            for out_ch in range(out_channels):
+                fltr = self.kernel[out_ch]
+                for in_ch in range(self.in_channels):
+                    for row in range(0, nrows_out):
+                        for col in range(0, ncols_out):
+                            tmp = input_tensor[img][in_ch][row*self.stride:row*self.stride+self.kernel_size,col*self.stride:col*self.stride+self.kernel_size]
+                            output_tensor[img][out_ch][row][col] += torch.mul(tmp, fltr[in_ch]).sum()       
+        return output_tensor
+
+class myConv2dMatmul(ABCConv2d):
+    def __call__(self, input_tensor):
+        if input_tensor == None:
+            return None
+        nimages, out_channels, nrows_out, ncols_out = calc_out_shape(
+            input_tensor.shape, 
+            self.out_channels, 
+            self.kernel_size, 
+            self.stride, 0)
+        #print(f"input tensor {input_tensor[0]}")
+        # output_tensor = torch.zeros(input_tensor.shape[0]*self.out_channels*\
+        #                             nrows_out*ncols_out).reshape(\
+        #                             input_tensor.shape[0], self.out_channels, 
+        #                             nrows_out, ncols_out)
+        img_height = input_tensor[0][0].shape[0]
+        img_width = input_tensor[0][0].shape[1]
+        #transform all images
+       # input_tensor = input_tensor.reshape(nimages, input_tensor.numel()//nimages).transpose(0,1)
+        #transform kernel into a matrix for matrix multiplication
+        #print(self.kernel)
+        km_cols = img_height*img_width*self.in_channels
+        km_rows = self.out_channels*nrows_out*ncols_out
+        kernel_mat = torch.zeros(km_rows,km_cols)
+        for out_ch in range(self.out_channels):
+            for in_ch in range(self.in_channels):
+                fltr = self.kernel[out_ch][in_ch]
+                in_ch_shift = in_ch*img_height*img_width
+                out_ch_shift = out_ch*nrows_out*ncols_out
+                k = 0
+                for i in range(nrows_out):
+                    for j in range(ncols_out):
+                        for krow in range(self.kernel_size):
+                            upd_col_shift = in_ch_shift+i*img_width+krow*img_width+self.stride*j
+                            #print(f"row {out_ch_shift+k}, col {upd_col_shift}")
+                            kernel_mat[out_ch_shift+k,upd_col_shift:upd_col_shift+self.kernel_size] = fltr[krow,:]
+                        k+= 1
+        output_tensor = kernel_mat.mm(input_tensor.reshape(nimages, input_tensor.numel()//nimages).transpose(0,1))
+        output_tensor = output_tensor.transpose(0,1).reshape(nimages,self.out_channels, nrows_out, ncols_out)
+        #print(f"got {output_tensor} of shape {output_tensor.shape}")
+        #print(kernel_mat.shape)
+        #print(kernel_mat[1])
+        return output_tensor
+
 # функция, создающая объект класса cls и возвращающая свертку от input_matrix
 def create_and_call_conv2d_layer(conv2d_layer_class, stride, kernel, input_matrix):
     out_channels = kernel.shape[0]
@@ -184,4 +251,4 @@ def test_conv2d_layer(conv2d_layer_class, batch_size=2,
     return torch.allclose(custom_conv2d_out, conv2d_out) \
               and (custom_conv2d_out.shape == conv2d_out.shape)
 
-print(test_conv2d_layer(Conv2d))
+print(test_conv2d_layer(myConv2dMatmul))

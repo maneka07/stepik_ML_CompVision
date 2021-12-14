@@ -206,6 +206,61 @@ class myConv2dMatmul(ABCConv2d):
         #print(kernel_mat[1])
         return output_tensor
 
+class myConv2dMatmulV2(ABCConv2d):
+    # Функция преобразования кернела в нужный формат.
+    def _convert_kernel(self):
+        converted_kernel = self.kernel.reshape(self.kernel.shape[0],-1)
+        #print(converted_kernel)
+        return converted_kernel
+
+    # Функция преобразования входа в нужный формат.
+    def _convert_input(self, input_tensor, output_height, output_width):
+        sq_kernel =  self.kernel_size*self.kernel_size
+        nrows = sq_kernel*self.in_channels
+        ncols = output_height*output_width
+        converted_input = torch.zeros( (nrows, input_tensor.shape[0]*ncols))
+        #fill out the matrix
+        for img_idx,img in enumerate(input_tensor):
+            row_shift = 0
+            col_shift = ncols*img_idx
+            for in_ch_idx, in_ch in enumerate(img):
+                #we only need to know how many total 
+                #filter slides there will be to fill out the matrix
+                k = 0
+                for row in range(output_height):
+                    for col in range(output_width):                        
+                        tmp = in_ch[row*self.stride:row*self.stride+self.kernel_size,col*self.stride:col*self.stride+self.kernel_size]
+                        converted_input[row_shift:row_shift+sq_kernel, col_shift+k:col_shift+k+1] = \
+                            tmp.flatten().unsqueeze(1)
+                        k += 1
+                row_shift += sq_kernel 
+        return converted_input
+
+    def __call__(self, torch_input):
+        batch_size, out_channels, output_height, output_width\
+            = calc_out_shape(
+                input_matrix_shape=torch_input.shape,
+                out_channels=self.kernel.shape[0],
+                kernel_size=self.kernel.shape[2],
+                stride=self.stride,
+                padding=0)
+
+        converted_kernel = self._convert_kernel()
+        converted_input = self._convert_input(torch_input, output_height, output_width)
+        alt_out_mat = converted_kernel @ converted_input
+       
+        #rebuild original output matrix
+        output_tensor = torch.zeros((torch_input.shape[0], self.out_channels, 
+                                     output_height, output_width))
+        
+        for img in range(batch_size):
+            for out_ch in range(out_channels):
+                col_shift = img * output_height*output_width
+                output_tensor[img][out_ch][:,:] = \
+                    alt_out_mat[out_ch,col_shift:col_shift+output_height*output_width].reshape(output_height, output_width)
+               
+        return output_tensor
+
 # функция, создающая объект класса cls и возвращающая свертку от input_matrix
 def create_and_call_conv2d_layer(conv2d_layer_class, stride, kernel, input_matrix):
     out_channels = kernel.shape[0]
@@ -251,4 +306,4 @@ def test_conv2d_layer(conv2d_layer_class, batch_size=2,
     return torch.allclose(custom_conv2d_out, conv2d_out) \
               and (custom_conv2d_out.shape == conv2d_out.shape)
 
-print(test_conv2d_layer(myConv2dMatmul))
+print(test_conv2d_layer(myConv2dMatmulV2, stride=1))
